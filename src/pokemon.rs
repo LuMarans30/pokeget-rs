@@ -1,10 +1,30 @@
-use std::process::exit;
-
 use image::DynamicImage;
-
 use rand::Rng;
 
-use crate::{cli::Args, list::List, Data};
+use crate::{
+    cli::Args,
+    list::{List, ListError},
+    Data,
+};
+
+/// Error types for Pokemon operations.
+#[derive(Debug, thiserror::Error)]
+pub enum PokemonError {
+    #[error("Pokemon '{0}' not found")]
+    PokemonNotFound(String),
+
+    #[error("Sprite load failed: {0}")]
+    SpriteLoadError(#[from] image::ImageError),
+
+    #[error("List operation failed: {0}")]
+    ListError(#[from] ListError),
+
+    #[error("Invalid Pokemon ID: {0} (max {1})")]
+    InvalidPokemonId(usize, usize),
+
+    #[error("Conflicting forms: {0}")]
+    ConflictingForms(String),
+}
 
 const DEFAULT_SHINY_RATE: u32 = 8192;
 
@@ -48,10 +68,7 @@ impl Selection {
                 0 => Selection::Random,
 
                 // If it's not zero and in the range of the list, then it's a dex id.
-                id if (id > 0) => Selection::DexId(id - 1),
-
-                // This shouldn't normally fire, but it's here to give the proper error message.
-                _ => Selection::Name(arg),
+                id => Selection::DexId(id),
             }
         } else {
             match arg.to_lowercase().as_str() {
@@ -70,19 +87,16 @@ impl Selection {
     }
 
     /// Evaluates the selection and returns a pokemon filename.
-    pub fn eval(self, list: &List) -> String {
+    ///
+    /// # Errors
+    ///
+    /// Returns `PokemonError` if the selection cannot be evaluated.
+    pub fn eval(self, list: &List) -> Result<String, PokemonError> {
         match self {
-            Selection::Random => list.random(),
-            Selection::Region(region) => list.get_by_region(region),
-            Selection::DexId(id) => list
-                .get_by_id(id)
-                .unwrap_or_else(|| {
-                    // add 1 to id so that error message matches user input
-                    eprintln!("{} is not a valid pokedex ID", id + 1);
-                    exit(1)
-                })
-                .clone(),
-            Selection::Name(name) => name,
+            Selection::Random => list.random().map_err(Into::into),
+            Selection::Region(region) => list.get_by_region(&region).map_err(Into::into).cloned(),
+            Selection::DexId(id) => list.get_by_id(id).cloned().map_err(Into::into),
+            Selection::Name(name) => Ok(name),
         }
     }
 }
@@ -107,30 +121,30 @@ pub struct Pokemon<'a> {
 impl<'a> Pokemon<'a> {
     /// Creates a new pokemon.
     /// This also fetches the sprite & formats the name.
-    pub fn new(arg: String, list: &List, attributes: &'a Attributes) -> Self {
+    ///
+    /// # Errors
+    ///
+    /// Returns `PokemonError` if the pokemon cannot be created.
+    pub fn new(arg: String, list: &List, attributes: &'a Attributes) -> Result<Self, PokemonError> {
         let selection = Selection::parse(arg);
         let is_random = selection == Selection::Random;
         let is_region = matches!(selection, Selection::Region(_));
-        let name = selection.eval(list);
+        let name = selection.eval(list)?;
 
         let path = attributes.path(&name, is_random, is_region);
         let bytes = Data::get(&path)
-            .unwrap_or_else(|| {
-                eprintln!("pokemon not found");
-                exit(1)
-            })
-            .data
-            .into_owned();
+            .ok_or_else(|| PokemonError::PokemonNotFound(name.clone()))?
+            .data;
 
-        let img = image::load_from_memory(&bytes).unwrap();
+        let img = image::load_from_memory(&bytes)?;
         let trimmed = showie::trim(&img);
 
-        Self {
+        Ok(Self {
             path,
             name: list.format_name(&name),
             sprite: trimmed,
             attributes,
-        }
+        })
     }
 }
 
@@ -161,7 +175,7 @@ impl Attributes {
             }
         };
 
-        0 == rand::thread_rng().gen_range(0..rate)
+        rand::thread_rng().gen_range(0..rate) == 0
     }
     /// Make a new [`Attributes`] by parsing the command line arguments.
     pub fn new(args: &Args) -> Self {
