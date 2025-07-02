@@ -1,10 +1,12 @@
 //! Display pokemon sprites in your terminal.
 
 use clap::Parser;
-use pokeget::cli::Args;
-use pokeget::list::List;
-use pokeget::pokemon::{Attributes, Pokemon};
-use pokeget::sprites::combine_sprites;
+use pokeget::{
+    cli::Args,
+    list::List,
+    pokemon::{Attributes, Pokemon},
+    sprites::combine_sprites,
+};
 use std::process::exit;
 
 fn main() {
@@ -16,11 +18,15 @@ fn main() {
     });
 
     if args.pokemon.is_empty() {
-        eprintln!("you must specify the pokemon you want to display");
+        eprintln!("You must specify at least one Pokémon");
         exit(1);
     }
 
-    let attributes = Attributes::new(&args);
+    let attributes = Attributes::new(&args).unwrap_or_else(|err| {
+        eprintln!("Error creating attributes: {err}");
+        exit(1);
+    });
+
     let pokemons: Vec<Pokemon> = args
         .pokemon
         .into_iter()
@@ -38,7 +44,6 @@ fn main() {
 
     if !args.hide_name {
         let names: Vec<&str> = pokemons.iter().map(|x| x.name.as_ref()).collect();
-
         eprintln!("{}", names.join(", "));
     }
 

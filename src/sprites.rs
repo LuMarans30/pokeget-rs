@@ -1,61 +1,58 @@
-use image::{DynamicImage, GenericImage, ImageError};
+use image::{DynamicImage, GenericImage, GenericImageView, ImageError};
 use terminal_size::{terminal_size, Width};
 
 use crate::pokemon::Pokemon;
 
-/// Error types for sprite combination operations.
-#[derive(Debug)]
+/// Error types for sprite operations
+#[derive(Debug, thiserror::Error)]
 pub enum SpriteError {
-    /// Failed to copy sprite to combined image.
-    CopyFailed(ImageError),
-    /// No sprites provided for combination.
+    #[error("Failed to copy sprite: {0}")]
+    CopyFailed(#[from] ImageError),
+
+    #[error("No sprites provided")]
     EmptyInput,
+
+    #[error("Terminal too narrow for sprites")]
+    TerminalTooNarrow,
+
+    #[error("Position out of bounds: {0}")]
+    PositionOutOfBounds(String),
 }
 
-impl std::fmt::Display for SpriteError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::CopyFailed(err) => write!(f, "Failed to copy sprite: {err}"),
-            Self::EmptyInput => write!(f, "No sprites provided for combination"),
-        }
-    }
-}
-
-impl std::error::Error for SpriteError {}
-
-/// Dimensions needed for a combined sprite canvas.
+/// Dimensions for combined sprite canvas
 struct CanvasDimensions {
     width: u32,
     height: u32,
 }
 
-/// Layout for arranging sprites in rows.
+/// Layout for arranging sprites
 struct SpriteLayout {
     rows: Vec<Vec<usize>>,
 }
 
 impl CanvasDimensions {
-    /// Calculate dimensions for a multi-row layout that respects terminal width.
-    fn calculate_for_wrapped(pokemons: &[Pokemon]) -> (Self, SpriteLayout) {
+    /// Calculate dimensions for multi-row layout
+    fn calculate_for_wrapped(pokemons: &[Pokemon]) -> Result<(Self, SpriteLayout), SpriteError> {
         const SPRITE_SPACING: u32 = 1;
-        const MIN_TERMINAL_WIDTH: u32 = 40; // Fallback width
+        const MIN_TERMINAL_WIDTH: u32 = 40;
 
-        // Get terminal width, with fallback
         let terminal_width = terminal_size()
             .map(|(Width(w), _)| w as u32)
-            .unwrap_or(MIN_TERMINAL_WIDTH);
+            .unwrap_or(MIN_TERMINAL_WIDTH)
+            .max(MIN_TERMINAL_WIDTH);
+
+        if terminal_width < MIN_TERMINAL_WIDTH {
+            return Err(SpriteError::TerminalTooNarrow);
+        }
 
         let mut rows = Vec::new();
         let mut current_row = Vec::new();
         let mut current_row_width = 0;
         let mut max_row_width = 0;
-        let mut current_row_height = 0;
 
         for (i, pokemon) in pokemons.iter().enumerate() {
             let sprite_width = pokemon.sprite.width();
-            let sprite_height = pokemon.sprite.height();
 
-            // Check if adding this sprite would exceed terminal width
             let needed_width = if current_row.is_empty() {
                 sprite_width
             } else {
@@ -63,66 +60,62 @@ impl CanvasDimensions {
             };
 
             if needed_width > terminal_width && !current_row.is_empty() {
-                // Start new row
+                // Finalize current row
                 rows.push(current_row);
                 max_row_width = max_row_width.max(current_row_width);
 
+                // Start new row
                 current_row = vec![i];
                 current_row_width = sprite_width;
-                current_row_height = sprite_height;
             } else {
-                // Add to current row
                 current_row.push(i);
                 current_row_width = needed_width;
-                current_row_height = current_row_height.max(sprite_height);
             }
         }
 
-        // Add the last row
+        // Add last row
         if !current_row.is_empty() {
             rows.push(current_row);
             max_row_width = max_row_width.max(current_row_width);
         }
 
-        // Calculate total height by summing row heights and spacing
-        let total_height = if rows.is_empty() {
-            1
-        } else {
-            let mut height = 0;
-            for row_indices in &rows {
-                let mut row_height = 0;
-                for &pokemon_idx in row_indices {
-                    row_height = row_height.max(pokemons[pokemon_idx].sprite.height());
-                }
-                height += row_height;
+        // Calculate total height
+        let mut total_height = 0;
+        for row in &rows {
+            let mut row_height = 0;
+            for &idx in row {
+                row_height = row_height.max(pokemons[idx].sprite.height());
             }
-            height + (rows.len() as u32 - 1) * SPRITE_SPACING
-        };
+            total_height += row_height;
+        }
 
-        let dimensions = Self {
-            width: max_row_width.max(1),
-            height: total_height,
-        };
+        if !rows.is_empty() {
+            total_height += (rows.len() - 1) as u32 * SPRITE_SPACING;
+        } else {
+            total_height = 1;
+        }
 
-        let layout = SpriteLayout { rows };
-
-        (dimensions, layout)
+        Ok((
+            Self {
+                width: max_row_width.max(1),
+                height: total_height.max(1),
+            },
+            SpriteLayout { rows },
+        ))
     }
 }
 
-/// Handles the creation and composition of sprite combinations.
+/// Handles sprite composition
 struct SpriteComposer {
     canvas: DynamicImage,
 }
 
 impl SpriteComposer {
-    /// Create a new composer with the given dimensions.
     fn new(dimensions: &CanvasDimensions) -> Self {
         let canvas = DynamicImage::new_rgba8(dimensions.width, dimensions.height);
         Self { canvas }
     }
 
-    /// Copy sprites onto the canvas using the provided layout.
     fn compose_with_layout(
         mut self,
         pokemons: &[Pokemon],
@@ -135,23 +128,43 @@ impl SpriteComposer {
             let mut x_offset = 0;
             let mut row_height = 0;
 
-            // Calculate row height first
+            // Calculate row height
             for &pokemon_idx in row_indices {
                 row_height = row_height.max(pokemons[pokemon_idx].sprite.height());
             }
 
-            // Place sprites in this row
-            for &pokemon_idx in row_indices {
+            // Place sprites in row
+            for (i, &pokemon_idx) in row_indices.iter().enumerate() {
                 let pokemon = &pokemons[pokemon_idx];
+                let sprite = &pokemon.sprite;
+                let (sprite_w, sprite_h) = sprite.dimensions();
 
-                // Align sprites to bottom of row
-                let sprite_y = y_offset + row_height - pokemon.sprite.height();
+                // Align to bottom of row
+                let sprite_y = y_offset + row_height - sprite_h;
 
-                self.canvas
-                    .copy_from(&pokemon.sprite, x_offset, sprite_y)
-                    .map_err(SpriteError::CopyFailed)?;
+                // Ensure position is within canvas bounds
+                if x_offset + sprite_w > self.canvas.width()
+                    || sprite_y + sprite_h > self.canvas.height()
+                {
+                    return Err(SpriteError::PositionOutOfBounds(format!(
+                        "Sprite at ({}, {}) with size {}x{} exceeds canvas {}x{}",
+                        x_offset,
+                        sprite_y,
+                        sprite_w,
+                        sprite_h,
+                        self.canvas.width(),
+                        self.canvas.height()
+                    )));
+                }
 
-                x_offset += pokemon.sprite.width() + SPRITE_SPACING;
+                self.canvas.copy_from(sprite, x_offset, sprite_y)?;
+
+                // Add spacing only between sprites, not after last in row
+                if i < row_indices.len() - 1 {
+                    x_offset += sprite_w + SPRITE_SPACING;
+                } else {
+                    x_offset += sprite_w;
+                }
             }
 
             y_offset += row_height + SPRITE_SPACING;
@@ -161,18 +174,13 @@ impl SpriteComposer {
     }
 }
 
-/// Combines several pokemon sprites into one by arranging them in rows that fit the terminal width.
-///
-/// # Errors
-///
-/// Returns `SpriteError::EmptyInput` if no sprites are provided.
-/// Returns `SpriteError::CopyFailed` if any sprite fails to copy to the canvas.
+/// Combines pokemon sprites into one image
 pub fn combine_sprites(pokemons: &[Pokemon]) -> Result<DynamicImage, SpriteError> {
     if pokemons.is_empty() {
         return Err(SpriteError::EmptyInput);
     }
 
-    let (dimensions, layout) = CanvasDimensions::calculate_for_wrapped(pokemons);
+    let (dimensions, layout) = CanvasDimensions::calculate_for_wrapped(pokemons)?;
     let composer = SpriteComposer::new(&dimensions);
     composer.compose_with_layout(pokemons, &layout)
 }

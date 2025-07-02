@@ -28,6 +28,7 @@ image = { version = "0.24.9", default-features = false, features = [
 ] }
 rand = "0.8.5"
 rust-embed = { version = "8.5.0" }
+sanitize-filename = "0.6.0"
 showie = "1.0.1"
 terminal_size = "0.3.0"
 thiserror = "1.0.61"

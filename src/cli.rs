@@ -3,7 +3,9 @@ use clap::Parser;
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 pub struct Args {
-    /// The pokemon to display, use "random" to get a random pokemon, use a region to get a random pokemon from that region
+    /// The pokemon to display, use "random" to get a random pokemon,
+    /// use a region to get a random pokemon from that region
+    #[arg(required = true)]
     pub pokemon: Vec<String>,
 
     /// Whether to hide the pokemon's name which appears above it
@@ -42,7 +44,7 @@ pub struct Args {
     #[arg(long, default_value_t = false)]
     pub hisui: bool,
 
-    /// Display the noble variant of the pokemon, this option often times only works in tandom with --hisui
+    /// Display the noble variant of the pokemon (requires --hisui)
     #[arg(short, long, default_value_t = false)]
     pub noble: bool,
 
@@ -50,7 +52,7 @@ pub struct Args {
     #[arg(long, default_value_t = false)]
     pub galar: bool,
 
-    /// Display the female variant of the pokemon if it exists. This doesn't apply to nidoran, for some reason
+    /// Display the female variant of the pokemon if it exists
     #[arg(long, default_value_t = false)]
     pub female: bool,
 }
