@@ -1,47 +1,29 @@
-use image::{DynamicImage, GenericImage};
-
 use crate::pokemon::Pokemon;
+use image::{DynamicImage, GenericImage};
 
 /// Combines several pokemon sprites into a single image
 pub fn combine(pokemons: &[Pokemon]) -> DynamicImage {
-    let term_width = terminal_size::terminal_size()
-        .map(|(w, _)| u32::from(w.0))
-        .unwrap_or(u32::MAX);
+    let term_width = terminal_size::terminal_size().map_or(u32::MAX, |(w, _)| w.0.into());
 
     let rows = pack_rows(pokemons, term_width);
+    let row_sizes: Vec<(u32, u32)> = rows.iter().map(row_size).collect();
 
-    let row_metrics: Vec<(u32, u32)> = rows
-        .iter()
-        .map(|row| {
-            let width = row
-                .iter()
-                .map(|p| p.sprite.width() + 1)
-                .sum::<u32>()
-                .saturating_sub(1);
-            let height = row.iter().map(|p| p.sprite.height()).max().unwrap_or(0);
-            (width, height)
-        })
-        .collect();
-
-    let total_width = row_metrics.iter().map(|(w, _)| *w).max().unwrap_or(0);
-    let total_height = row_metrics.iter().map(|(_, h)| *h).sum();
-
-    let mut canvas = DynamicImage::new_rgba8(total_width.max(1), total_height);
+    let total_width = row_sizes.iter().map(|(w, _)| *w).max().unwrap_or(0);
+    let total_height: u32 = row_sizes.iter().map(|(_, h)| h).sum();
+    let mut canvas = DynamicImage::new_rgba8(total_width, total_height);
 
     let mut current_y = 0;
-    for (row, &(_, row_height)) in rows.iter().zip(&row_metrics) {
+    for (row, &(_, row_height)) in rows.iter().zip(&row_sizes) {
         let mut current_x = 0;
-
         for pokemon in row {
             let sprite = &pokemon.sprite;
-            let y_offset = current_y + (row_height - sprite.height());
-
-            canvas.copy_from(sprite, current_x, y_offset).unwrap();
+            canvas
+                .copy_from(sprite, current_x, current_y + row_height - sprite.height())
+                .unwrap();
             current_x += sprite.width() + 1;
         }
         current_y += row_height;
     }
-
     canvas
 }
 
@@ -52,15 +34,22 @@ fn pack_rows<'a>(pokemons: &'a [Pokemon], max_width: u32) -> Vec<Vec<&'a Pokemon
 
     for pokemon in pokemons {
         let w = pokemon.sprite.width() + 1;
-
         if current_width > 0 && current_width + w > max_width {
             rows.push(vec![]);
             current_width = 0;
         }
-
         rows.last_mut().unwrap().push(pokemon);
         current_width += w;
     }
-
     rows
+}
+
+fn row_size(row: &Vec<&Pokemon>) -> (u32, u32) {
+    let width = row
+        .iter()
+        .map(|p| p.sprite.width() + 1)
+        .sum::<u32>()
+        .saturating_sub(1);
+    let height = row.iter().map(|p| p.sprite.height()).max().unwrap_or(0);
+    (width, height)
 }
